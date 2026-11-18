@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# never in git (PLAN.md Sections 3.3, 6.2)
+truth/
+ledger.jsonl
+*.sock
+
+# large or regenerable
+services/world/cache/
+outer/sandbox.sif
+runs/*
+!runs/report.md
+feedback/**/transcript.jsonl
+feedback/**/workdir/

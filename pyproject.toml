@@ -1,0 +1,30 @@
+[project]
+name = "flywire-outer-harness"
+version = "0.1.0"
+description = "An outer harness that has a coding agent build and improve a FlyWire proofreading harness"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pyyaml",
+    "httpx",          # llm proxy -> Anthropic upstream
+    "anthropic",      # tests (fake upstream) and type references
+    "caveclient",     # build/, services/world/, outer/score.py (read-only FlyWire access)
+    "cloud-volume",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["live: needs FlyWire network access (skipped unless --live)"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+extend-exclude = ["harnesses"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E741"]

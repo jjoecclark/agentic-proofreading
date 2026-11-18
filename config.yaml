@@ -1,0 +1,77 @@
+# All settings for the outer harness (PLAN.md Section 10). Paths are relative to this file
+# unless they start with "/" or "~".
+config_version: "1"
+
+data:
+  # operations_v2.csv = the source's operations.csv (kept as data/operations.csv, sha256 00a51c046bee2682)
+  # with the 17 splits that did not survive to materialization 783 replaced by the next surviving
+  # splits of the source sampler's own draw (build/replace_splits.py; data/splits.json version 2)
+  operations_csv: data/operations_v2.csv
+  source_repo: https://github.com/brychang/flywire-edit-sampling
+  source_commit: 05f9f38535748517937f630c4ccbc281cb7fc8eb
+  source_path: outputs/operations.csv
+  sha256_prefix: 438281377ef70d38            # of operations_csv; checked at startup (outer/config.py)
+
+flywire:
+  datastack: flywire_fafb_public              # CAVE token: caveclient's default secret file
+  em_source: precomputed://https://bossdb-open-data.s3.amazonaws.com/flywire/fafbv14
+
+splits: {train: 100, val: 50, test: 50, seed: 0}
+scoring: {hit_radius_um: 2.0}
+
+# Negative tasks (no edit needed), built from the same operations by build/build_negatives.py; each
+# goes to its source operation's split. An edit "survived" if it is still in place in the public
+# materialization `check_materialization` (the published FlyWire connectome).
+negatives:
+  check_materialization: 783
+  sample_supervoxels: 20000      # sampled to check that nothing was split off a segment later
+  no_split_min_together: 1.0     # share of those that must still be on one root at the check time
+
+models:
+  meta_agent: claude-opus-5-5
+  inner_allowed: [claude-opus-5-5]           # the proxy rejects other models
+
+# USD per million tokens. Cache prices are explicit because they are not a fixed multiple of the
+# input price on every model (Opus 5.5: cache read $0.20 = 0.05 x input; 5-minute cache write
+# 1.25 x input; 1-hour cache write 2 x input).
+prices_usd_per_mtok:
+  claude-opus-5-5: {input: 4.00, output: 20.00, cache_write_5m: 5.00, cache_write_1h: 8.00, cache_read: 0.20}
+
+limits:
+  task_wall_s: 1800
+  parallel_tasks: 8                          # tasks evaluated at once (evaluate.py)
+  meta_wall_s: 14400                         # wall-time limit for one meta-agent session
+
+budget_usd:                                  # placeholders until Phase 5 measures real costs
+  per_task: 2.00
+  meta_session: 30.00
+  meta_probe: 20.00
+  total: 500                                # set by the user before Phase 6
+  ask_above: 20.00                           # ask the user before any step expected to cost more
+
+loop: {max_rounds: 101, accept_min_gain: 3, plateau_rounds: 101}
+
+# Services run on the vis node. Sandboxed code reaches them only through these Unix sockets,
+# which are bound into containers that have no network (PLAN.md Section 7, vis-node variant).
+world:
+  host: della-vis1
+  port: null
+  socket: services/world/world.sock
+  cache_dir: services/world/cache
+  max_cutout_voxels: 67108864                # 64 Mi voxels per EM/supervoxel/segmentation cutout
+  max_roots_per_call: 100000
+
+proxy:
+  host: della-vis1
+  port: null
+  socket: services/llm/llm.sock
+  upstream: https://api.anthropic.com
+  api_key_file: ~/.config/flywire_harness/anthropic_api_key   # only the proxy reads this
+
+secrets:
+  token_secret_file: ~/.config/flywire_harness/token_secret   # signs world and run tokens; auto-created
+
+sandbox:
+  image: outer/sandbox.sif
+  definition: outer/sandbox.def
+  meta_tools: [Read, Write, Edit, Bash, Glob, Grep, TodoWrite]  # no web tools
