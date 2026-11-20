@@ -101,7 +101,33 @@ def test_paired_gain():
     a = {"t1": {"hit": True}, "t2": {"hit": True}, "t3": {"hit": False}}
     b = {"t1": {"hit": False}, "t2": {"hit": True}, "t3": {"hit": True}}
     g = S.paired_gain(a, b)
-    assert g == {"n": 3, "new_hits": 2, "best_hits": 2, "gain": 0, "new_only": 1, "best_only": 1}
+    assert {k: g[k] for k in ("n", "new_hits", "best_hits", "gain", "new_only", "best_only")} == \
+        {"n": 3, "new_hits": 2, "best_hits": 2, "gain": 0, "new_only": 1, "best_only": 1}
+
+
+def _s(kind, hit):
+    return {"hit": hit, "kind": kind, "operation_type": "none" if kind.startswith("no_") else kind,
+            "distance_nm": None, "usd": 0, "miss_reason": None if hit else "x"}
+
+
+def test_kind_score_weighs_each_kind_the_same():
+    # 'always none' on 1 merge, 1 split, 4 no_merge, 4 no_split: 8/10 hits, but score 50%
+    always_none = [_s("merge", False), _s("split", False)] + [_s("no_merge", True)] * 4 + [_s("no_split", True)] * 4
+    assert S.kind_score(always_none) == pytest.approx(0.5)
+    s = S.summarize(always_none)
+    assert s["score"] == pytest.approx(0.5) and s["all"]["hits"] == 8 and s["score_version"] == "3"
+    # merge 1/2, no_split 1/4, other kinds absent: mean over present kinds only
+    assert S.kind_score([_s("merge", True), _s("merge", False)] + [_s("no_split", True)] + [_s("no_split", False)] * 3) \
+        == pytest.approx((0.5 + 0.25) / 2)
+    assert S.kind_score([]) is None
+
+
+def test_paired_gain_score_pp():
+    new = {"a": _s("merge", True), "b": _s("no_merge", True), "c": _s("no_merge", True), "x": _s("split", True)}
+    best = {"a": _s("merge", False), "b": _s("no_merge", True), "c": _s("no_merge", False)}
+    g = S.paired_gain(new, best)  # common tasks a, b, c only
+    assert g["n"] == 3 and g["new_score"] == pytest.approx(1.0) and g["best_score"] == pytest.approx(0.25)
+    assert g["score_gain_pp"] == pytest.approx(75.0)
 
 
 def test_negative_tasks(world):

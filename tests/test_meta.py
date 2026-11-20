@@ -55,7 +55,7 @@ def meta_env():
     env, servers = make_env(n_strips=4, reply=scripted_meta)
     env.cfg["limits"]["meta_wall_s"] = 900
     env.cfg["budget_usd"]["total"] = 1000.0
-    env.cfg["loop"].update(max_rounds=2, accept_min_gain=1, plateau_rounds=3)
+    env.cfg["loop"].update(max_rounds=2, accept_min_gain_pp=1.0, plateau_rounds=3)
     yield env
     close_env(env, servers)
 
@@ -90,6 +90,43 @@ def test_loop_adopts_h000_from_outer_create():
         close_env(env, servers)
 
 
+def test_loop_records_test_every_round_but_never_uses_or_shows_it():
+    """Each evaluated harness also runs on test; decide() uses val only and the feedback has no test."""
+    from outer.feedback import build_feedback
+    from outer.loop import decide, run_rounds
+    from outer.sandbox import LocalRunner
+    from tests.conftest import harness_copy
+
+    env, servers = make_env(n_strips=6, test_strips=2, negatives=True)
+    try:
+        env.cfg["budget_usd"]["total"] = 1000.0
+        env.cfg["loop"].update(max_rounds=1, evaluate_test_every_round=True)
+        harness_copy("trivial", env.root).rename(env.root / "harnesses/h000")
+        (env.root / "runs/meta/round_000").mkdir(parents=True)
+        (env.root / "runs/meta/round_000/session.json").write_text(json.dumps(
+            {"session": "round_000", "round": 0, "harness": "h000", "ok": True, "meta_usd": 0.0, "probe_usd": 0.0,
+             "meta_requests": 0, "probe_requests": 0, "wall_s": 1.0, "scan": [], "has_notes": True}))
+        ev = Evaluator(env.cfg, LocalRunner(env.world_socket, env.llm_socket), CachedLookup(env.backend), truth=env.truth)
+        st = run_rounds(env.cfg, yes=True, allow_scan_hits=False, ev=ev)
+        r0 = st["rounds"][0]
+        idx = json.loads((env.root / "tasks/index.json").read_text())
+        assert r0["test"]["all"]["n"] == len(idx["test"]) == 4 and r0["test"]["score"] is not None
+        assert r0["val"]["score"] == pytest.approx(0.0)  # trivial: off-target edits, never none
+        assert all((env.root / "runs/h000/test" / t / "score.json").exists() for t in idx["test"])
+        # a second harness that differs from h000 only on test is not kept: decide() reads val only
+        harness_copy("trivial", env.root).rename(env.root / "harnesses/h001")
+        import shutil
+        shutil.copytree(env.root / "runs/h000/val", env.root / "runs/h001/val")
+        assert decide(env.cfg, st, "h001")[0] is False
+        fb = build_feedback(env.cfg, 1, "h000", st, None)
+        text = "".join(p.read_text(errors="replace") for p in fb.rglob("*") if p.is_file())
+        assert not any(t in text for t in idx["test"] + idx["val"])
+        assert all("test" not in r for r in json.loads((fb / "history.json").read_text())["rounds"])
+        assert "test" in (env.root / "runs/report.md").read_text()
+    finally:
+        close_env(env, servers)
+
+
 @needs_apptainer
 def test_meta_session_and_two_rounds(meta_env):
     from outer.loop import load_state, run_rounds
@@ -117,7 +154,7 @@ def test_meta_session_and_two_rounds(meta_env):
     # the transcript of the meta session exists and the tool calls are in it
     tr = (env.root / "runs/meta/round_000/transcript.jsonl").read_text()
     assert "score_train" in tr
-    # round 0 evaluated on train + val and kept; round 1 (no change) rejected under accept_min_gain=1
+    # round 0 evaluated on train + val and kept; round 1 (no change) rejected under accept_min_gain_pp=1
     assert r0["kept"] and r0["evaluated"] and r0["train"]["all"]["n"] == 2 and r0["val"]["all"]["n"] == 2
     r1 = st["rounds"][1]
     assert r1["harness"] == "h001" and r1["evaluated"] and not r1["kept"], r1

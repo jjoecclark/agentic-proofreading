@@ -23,7 +23,7 @@ def revise(cfg: Config, round_k: int, state: dict[str, Any], **kw: Any) -> dict[
     rejected = last["harness"] if last and not last.get("kept") and last.get("harness") and last.get("evaluated") else None
     fb = build_feedback(cfg, round_k, best, state, rejected)
     tmpl = (ROOT / "outer" / "prompts" / "meta_revise.md").read_text().split("-->", 1)[-1].strip()
-    prompt = fill(tmpl, round=round_k, best=best, accept_min_gain=cfg["loop"]["accept_min_gain"],
+    prompt = fill(tmpl, round=round_k, best=best, accept_min_gain_pp=cfg["loop"]["accept_min_gain_pp"],
                          n_val=len(task_ids(cfg, "val")))
     return run_meta_session(cfg, round_k, f"h{round_k:03d}", prompt, start_harness=cfg.root / "harnesses" / best,
                             feedback_dir=fb, **kw)

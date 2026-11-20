@@ -1,0 +1,24 @@
+{
+ "state_version": "1",
+ "task_id": "t_c1f38230",
+ "timestamp_utc": "2022-12-23T18:30:54.072000+00:00",
+ "neuroglancer": {
+  "layers": [
+   {
+    "type": "image",
+    "name": "em",
+    "source": "precomputed://https://bossdb-open-data.s3.amazonaws.com/flywire/fafbv14"
+   },
+   {
+    "type": "segmentation",
+    "name": "segments",
+    "source": "graphene://https://prod.flywire-daf.com/segmentation/1.0/flywire_public",
+    "segments": [
+     "720575940621138977",
+     "720575940644303639"
+    ],
+    "timestamp": "1671820254.072000"
+   }
+  ]
+ }
+}

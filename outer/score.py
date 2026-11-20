@@ -1,4 +1,4 @@
-"""Scoring (PLAN.md Section 5, score_version 2). With build/, the only reader of truth/.
+"""Scoring (PLAN.md Section 5, score_version 3). With build/, the only reader of truth/.
 
 Hit radius R = scoring.hit_radius_um. A point "lies on root X at time t" when the supervoxel at that
 point (base resolution of the supervoxel layer) maps to root X at t; background lies on no root.
@@ -10,10 +10,14 @@ point (base resolution of the supervoxel layer) maps to root X at t; background 
   source-sink pair within R of the edit center.
 - No-edit hit (negative tasks, kind `no_split` or `no_merge`; build/build_negatives.py): action
   "none". Any merge or split is a miss (`edit_not_needed`).
+
+The **score** of a set of tasks is the mean of the hit rates of the kinds present in it (merge, split,
+no_merge, no_split), so each kind weighs the same however many tasks it has: a harness that always
+answers "none" scores 50% on a set with all four kinds. Hits are still counted per task.
 - Anything else is a miss, with its reason recorded.
 
 Task kinds: `merge`, `split` (edit tasks) and `no_merge`, `no_split` (negatives). Summaries report
-each kind, edit tasks, no-edit tasks, and all tasks.
+the score, each kind, edit tasks, no-edit tasks, and all tasks.
 
 Per task: hit, miss reason, distance from the predicted location to the edit center (merge: midpoint
 of the two points; split: midpoint of the closest source-sink pair), cost, tokens, wall time.
@@ -31,7 +35,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-SCORE_VERSION = "2"  # 2: negative tasks (kinds no_merge / no_split)
+SCORE_VERSION = "3"  # 2: negative tasks (kinds no_merge / no_split); 3: score = mean of per-kind hit rates
 DECISION_VERSION = "1"
 
 # miss reasons
@@ -54,7 +58,7 @@ NEGATIVE_KINDS = ("no_merge", "no_split")
 
 
 def kind_of(truth_or_score: dict[str, Any]) -> str:
-    return truth_or_score.get("kind") or truth_or_score["operation_type"]
+    return truth_or_score.get("kind") or truth_or_score.get("operation_type", "?")
 
 
 class RootLookup(Protocol):
@@ -259,6 +263,19 @@ def wilson(k: int, n: int, z: float = 1.959964) -> tuple[float | None, float | N
     return max(0.0, c - h), min(1.0, c + h)
 
 
+KINDS = (*EDIT_KINDS, *NEGATIVE_KINDS)
+
+
+def kind_score(scores: list[dict[str, Any]]) -> float | None:
+    """Mean of the per-kind hit rates over the kinds present (None for no tasks)."""
+    rates = []
+    for k in KINDS:
+        ss = [s for s in scores if kind_of(s) == k]
+        if ss:
+            rates.append(sum(bool(s["hit"]) for s in ss) / len(ss))
+    return sum(rates) / len(rates) if rates else None
+
+
 def summarize(scores: list[dict[str, Any]]) -> dict[str, Any]:
     def block(ss: list[dict[str, Any]]) -> dict[str, Any]:
         n, k = len(ss), sum(bool(s["hit"]) for s in ss)
@@ -268,10 +285,10 @@ def summarize(scores: list[dict[str, Any]]) -> dict[str, Any]:
                 "median_distance_nm": statistics.median(d) if d else None,
                 "n_with_distance": len(d)}
 
-    out = {"score_version": SCORE_VERSION, "all": block(scores),
+    out = {"score_version": SCORE_VERSION, "score": kind_score(scores), "all": block(scores),
            "edit": block([s for s in scores if kind_of(s) in EDIT_KINDS]),
            "no_edit": block([s for s in scores if kind_of(s) in NEGATIVE_KINDS]),
-           **{k: block([s for s in scores if kind_of(s) == k]) for k in (*EDIT_KINDS, *NEGATIVE_KINDS)}}
+           **{k: block([s for s in scores if kind_of(s) == k]) for k in KINDS}}
     usd = [float(s.get("usd") or 0.0) for s in scores]
     out["usd_total"] = sum(usd)
     out["usd_per_task"] = (sum(usd) / len(usd)) if usd else None
@@ -285,14 +302,18 @@ def summarize(scores: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def paired_gain(new: dict[str, dict[str, Any]], best: dict[str, dict[str, Any]]) -> dict[str, int]:
-    """Hits of two harnesses on the same tasks (dicts task_id -> score)."""
+def paired_gain(new: dict[str, dict[str, Any]], best: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Two harnesses on the same tasks (dicts task_id -> score): hits, and the score (mean per-kind hit
+    rate) with its gain in percentage points."""
     common = sorted(set(new) & set(best))
     a = sum(bool(new[t]["hit"]) for t in common)
     b = sum(bool(best[t]["hit"]) for t in common)
+    sa, sb = kind_score([new[t] for t in common]), kind_score([best[t] for t in common])
     return {"n": len(common), "new_hits": a, "best_hits": b, "gain": a - b,
             "new_only": sum(bool(new[t]["hit"]) and not best[t]["hit"] for t in common),
-            "best_only": sum(bool(best[t]["hit"]) and not new[t]["hit"] for t in common)}
+            "best_only": sum(bool(best[t]["hit"]) and not new[t]["hit"] for t in common),
+            "new_score": sa, "best_score": sb,
+            "score_gain_pp": None if sa is None or sb is None else 100.0 * (sa - sb)}
 
 
 class CachedLookup:

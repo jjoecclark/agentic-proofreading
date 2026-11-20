@@ -1,6 +1,6 @@
 # TASK: build a FlyWire proofreading harness
 
-<!-- prompt_version 2 (task version 2; see "Changes" at the end). Placeholders in {braces} are filled from config.yaml by outer/create.py. -->
+<!-- prompt_version 3 (task version 3; see "Changes" at the end). Placeholders in {braces} are filled from config.yaml by outer/create.py. -->
 
 ## The task
 
@@ -23,12 +23,11 @@ Each task shows you one or two segments at a moment T of FlyWire's history and a
   be cut. If it is one cell, return `none`.
 
 When an edit is needed, it is a real edit that a human proofreader made right after T, and that is
-the edit to find (there is one). When no edit is needed, the task shows the state just after a real
-edit, checked against FlyWire's published connectome (materialization 783): two segments a
-proofreader had just split apart, which stayed apart; or a segment a proofreader had just merged,
-from which nothing was split off later. {n_train_negative} of the {n_train} train tasks need no edit;
-held-out tasks have a similar mix. The edits are real proofreading actions and a few may themselves be
-mistakes, so no harness can score 100%.
+the edit to find (there is one). When no edit is needed, the segments are neurons that FlyWire's
+published connectome (materialization 783) lists as proofread, unchanged since before T: two different
+neurons that touch (they form synapses with each other), or one neuron with nothing to split off.
+{n_train_negative} of the {n_train} train tasks need no edit; held-out tasks have the same mix. The edits
+are real proofreading actions and a few may themselves be mistakes, so no harness can score 100%.
 
 ## Your job
 
@@ -82,7 +81,8 @@ belongs to X at time T. A point on background lies on no segment.
 - Anything else is a miss: `none` on a task that needs an edit, the wrong action, invalid output, a
   crash, a timeout, or an exhausted budget. A crash or timeout is a miss on a no-edit task too.
 
-Every task counts the same: your score is the number of hits.
+Your **score** is the mean of the hit rates of the four task kinds (`merge`, `split`, `no_merge`,
+`no_split`), so each kind weighs the same however many tasks it has. Always answering `none` scores 50%.
 
 The true edit location is the mean of the points the human proofreader placed. Reported per task:
 its kind (`merge`, `split`, `no_merge`, `no_split`), hit/miss, the miss reason, the distance from your
@@ -152,3 +152,5 @@ Your harness is judged on **held-out tasks** you never see. Train tasks are for 
 
 - Version 2: tasks that need no edit (answer `none`); segment and L2 ids are opaque per task (world API
   version 2); the proofreading guide in `/work/docs/`.
+- Version 3: new no-edit tasks (proofread neurons: two synapsing neurons, or one neuron), four times as
+  many as edit tasks; the score is the mean of the per-kind hit rates.

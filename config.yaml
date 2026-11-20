@@ -1,16 +1,18 @@
 # All settings for the outer harness (PLAN.md Section 10). Paths are relative to this file
 # unless they start with "/" or "~".
-config_version: "1"
+config_version: "2"   # 2: proofread-neuron negatives, per-kind score, test every round
 
 data:
-  # operations_v2.csv = the source's operations.csv (kept as data/operations.csv, sha256 00a51c046bee2682)
-  # with the 17 splits that did not survive to materialization 783 replaced by the next surviving
-  # splits of the source sampler's own draw (build/replace_splits.py; data/splits.json version 2)
-  operations_csv: data/operations_v2.csv
+  # operations_v3.csv = the source's operations.csv (kept as data/operations.csv, sha256 00a51c046bee2682)
+  # with (v2) the 17 splits that did not survive to materialization 783 replaced by the next surviving
+  # splits of the source sampler's own draw (build/replace_splits.py), then (v3) the 16 edits on a root
+  # tagged glia / not a neuron / trachea replaced by the next clean ones (build/replace_edits.py);
+  # data/splits.json version 3
+  operations_csv: data/operations_v3.csv
   source_repo: https://github.com/brychang/flywire-edit-sampling
   source_commit: 05f9f38535748517937f630c4ccbc281cb7fc8eb
   source_path: outputs/operations.csv
-  sha256_prefix: 438281377ef70d38            # of operations_csv; checked at startup (outer/config.py)
+  sha256_prefix: cc5a2dad5e6802f6            # of operations_csv; checked at startup (outer/config.py)
 
 flywire:
   datastack: flywire_fafb_public              # CAVE token: caveclient's default secret file
@@ -19,13 +21,22 @@ flywire:
 splits: {train: 100, val: 50, test: 50, seed: 0}
 scoring: {hit_radius_um: 2.0}
 
-# Negative tasks (no edit needed), built from the same operations by build/build_negatives.py; each
-# goes to its source operation's split. An edit "survived" if it is still in place in the public
-# materialization `check_materialization` (the published FlyWire connectome).
+# Negative tasks (right answer: none), built from proofread neurons by build/build_negatives.py
+# (negative_version 2). no_merge: two proofread neurons that share >= min_synapses synapses (A->B plus
+# B->A, cleft_score > min_cleft_score); no_split: one proofread neuron. Pool: proofread_neurons at
+# check_materialization, minus roots tagged by exclude_tag_regex in neuron_information_v2 (glia, not a
+# neuron, trachea) or without a neuron super_class. Dated at a random edit time of the matching edit type
+# (+- time_jitter_days), using only neurons whose root already existed then. Each neuron is used once.
 negatives:
   check_materialization: 783
-  sample_supervoxels: 20000      # sampled to check that nothing was split off a segment later
-  no_split_min_together: 1.0     # share of those that must still be on one root at the check time
+  n_no_merge: 400
+  n_no_split: 400
+  split_counts: {train: 200, val: 100, test: 100}   # per kind (user, 2026-11-20)
+  min_synapses: 5
+  min_cleft_score: 50
+  time_jitter_days: 14
+  exclude_tag_regex: "glia|astrocyte|not a neuron|not_a_neuron|trachea"
+  seed: 0
 
 models:
   meta_agent: claude-opus-5-5
@@ -49,7 +60,10 @@ budget_usd:                                  # placeholders until Phase 5 measur
   total: 500                                # set by the user before Phase 6
   ask_above: 20.00                           # ask the user before any step expected to cost more
 
-loop: {max_rounds: 101, accept_min_gain: 3, plateau_rounds: 101}
+# Keep a revision if its val score (mean of the per-kind hit rates: merge, split, no_merge, no_split)
+# beats the best's by at least accept_min_gain_pp percentage points on the same tasks. Every evaluated
+# harness is also run on test (recorded only; never used to decide, never shown to the meta-agent).
+loop: {max_rounds: 101, accept_min_gain_pp: 2.0, plateau_rounds: 101, evaluate_test_every_round: true}
 
 # Services run on the vis node. Sandboxed code reaches them only through these Unix sockets,
 # which are bound into containers that have no network (PLAN.md Section 7, vis-node variant).

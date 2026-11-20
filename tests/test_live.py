@@ -3,7 +3,7 @@
 - Phase 2: the world service on 2 train tasks: EM and segmentation cutouts at the edit location, the L2
   graph, L2 positions, and mesh of a historical root, and refusal of a root that is not valid at T.
   Ids are the task's aliases (world API 2).
-- Negative tasks: the world at T_post serves the edit's resulting segments and refuses the pre-edit ones.
+- Negative tasks: the world at T serves the proofread neurons (negative_version 2).
 - Scoring on real data: a test-only oracle that snaps to the edited supervoxels runs in the real sandbox
   against the real world service and is scored by outer/score.py. No Claude API calls are made.
 """
@@ -95,24 +95,21 @@ def test_world_live(live, typ):
 
 @pytest.mark.parametrize("kind", ["no_merge", "no_split"])
 def test_world_live_negative(live, kind):
+    """A negative's proofread neurons are served at its T (L2 graph, mesh, and the segmentation at each
+    neuron's recorded point), under the task's aliases."""
     cfg, backend, secret, tmp = live
     tid = pick(cfg, kind)[0]
     neg = Truth(cfg.root / "truth")(tid)
-    src = json.loads((cfg.root / "truth" / f"{neg['source_operation_id']}.json").read_text())
     st = json.loads((cfg.root / "tasks" / f"{tid}.json").read_text())
+    assert st["timestamp_utc"] == neg["t_utc"]
     w = WorldClient(socket_path=str(tmp / "w.sock"), token=world_token(secret, tid, st["timestamp_utc"]))
-    c = np.array(src["edit_center_nm_xyz"])
-    box = [(c - [1024, 1024, 200]).tolist(), (c + [1024, 1024, 200]).tolist()]
-    found = {str(int(x)) for x in np.unique(w.segmentation(box, (16, 16, 40)).data_zyx)}
     segs = ali(secret, tid, neg["segments"])
-    assert set(segs) & found, "the task's segments are not at the source edit"
-    gone = set(src["pre_edit_roots"]) - set(src["post_edit_roots"])
-    assert not set(ali(secret, tid, gone)) & found, "a pre-edit root is visible at T_post"
-    for s_ in segs:
+    for s_, n in zip(segs, neg["neurons"], strict=True):
+        c = np.array(n["position_nm_xyz"], dtype=float)
+        box = [(c - [256, 256, 80]).tolist(), (c + [256, 256, 80]).tolist()]
+        found = {str(int(x)) for x in np.unique(w.segmentation(box, (16, 16, 40)).data_zyx)}
+        assert s_ in found, "the neuron is not at its recorded point at T"
         assert len(w.l2_graph(s_).l2_ids) >= 1 and len(w.mesh(s_).vertices_nm_xyz) > 0
-    for r in ali(secret, tid, gone):
-        with pytest.raises(WorldRefused):
-            w.mesh(r)
 
 
 def snap_answers(cfg, tids):

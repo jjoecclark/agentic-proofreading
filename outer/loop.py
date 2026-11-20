@@ -1,12 +1,16 @@
 """The outer loop (PLAN.md Section 8.4). Plain code, not an agent.
 
 Each round: check the budget in the ledger; create (round 0) or revise (from the best harness);
-evaluate on train and val; keep the revision only if its val hits beat the best's by at least
-loop.accept_min_gain on the same tasks. Stop after loop.max_rounds, after loop.plateau_rounds rounds
+evaluate on train and val; keep the revision only if its val score (mean of the per-kind hit rates,
+outer/score.py) beats the best's by at least loop.accept_min_gain_pp percentage points on the same
+tasks. With loop.evaluate_test_every_round (the user's approval, 2026-11-20), each evaluated harness is
+also run on test, for the record only: test results never decide anything and never reach the
+meta-agent (outer/feedback.py takes only train and aggregate val). Stop after loop.max_rounds, after loop.plateau_rounds rounds
 in a row with nothing kept, or when budget_usd.total would be exceeded. State: runs/loop_state.json.
 
     .venv/bin/python -m outer.loop --yes             # run rounds within budget_usd.total
-    .venv/bin/python -m outer.loop --final --yes     # once, at the end: best and h000 on test
+    .venv/bin/python -m outer.loop --final --yes     # at the end: best and h000 on test (reuses
+                                                     # the per-round test runs when they exist)
 
 Steps expected to cost more than budget_usd.ask_above need --yes (the user's approval of
 budget_usd.total) or an interactive "y".
@@ -25,7 +29,7 @@ from outer.feedback import short
 from outer.score import paired_gain
 from services.llm.ledger import summarize as ledger_summary
 
-LOOP_VERSION = "1"
+LOOP_VERSION = "2"  # 2: per-kind score keep rule (accept_min_gain_pp); test recorded every round
 
 
 def state_path(cfg: Config):
@@ -55,7 +59,7 @@ def per_task_estimate(cfg: Config, st: dict[str, Any]) -> float:
     """Measured mean cost per evaluated task (x1.5 margin), or the per-task cap before any measurement."""
     usd, n = 0.0, 0
     for r in st["rounds"]:
-        for k in ("train", "val"):
+        for k in ("train", "val", "test"):
             if r.get(k):
                 usd += r[k].get("usd_total") or 0.0
                 n += r[k]["all"]["n"]
@@ -63,10 +67,15 @@ def per_task_estimate(cfg: Config, st: dict[str, Any]) -> float:
     return min(cap, 1.5 * usd / n) if n else cap
 
 
+def eval_splits(cfg: Config) -> tuple[str, ...]:
+    """The splits every evaluated harness runs on."""
+    return ("train", "val", "test") if cfg["loop"].get("evaluate_test_every_round") else ("train", "val")
+
+
 def round_estimate(cfg: Config, st: dict[str, Any], session: dict[str, Any] | None = None) -> float:
     """Worst case of the next round. With `session` (this round's meta session, already finished), only
     its evaluation, priced from that session's last probe when it ran one."""
-    n_eval = len(task_ids(cfg, "train")) + len(task_ids(cfg, "val"))
+    n_eval = sum(len(task_ids(cfg, k)) for k in eval_splits(cfg))
     if session is None:
         return (float(cfg["budget_usd"]["meta_session"]) + float(cfg["budget_usd"]["meta_probe"])
                 + n_eval * per_task_estimate(cfg, st))
@@ -112,10 +121,12 @@ def decide(cfg: Config, st: dict[str, Any], name: str) -> tuple[bool, str, dict[
     if st["best"] is None:
         return True, "first harness", None
     g = paired_gain(load_scores(cfg, name, "val"), load_scores(cfg, st["best"], "val"))
-    need = int(cfg["loop"]["accept_min_gain"])
-    if g["gain"] >= need:
-        return True, f"val hits {g['new_hits']} vs {g['best_hits']} (+{g['gain']} >= {need})", g
-    return False, f"val hits {g['new_hits']} vs {g['best_hits']} ({g['gain']:+d} < +{need})", g
+    need = float(cfg["loop"]["accept_min_gain_pp"])
+    if g["score_gain_pp"] is None:
+        return False, "no val scores to compare", g
+    msg = (f"val score {100 * g['new_score']:.1f}% vs {100 * g['best_score']:.1f}% "
+           f"({g['score_gain_pp']:+.1f} pp {'>=' if g['score_gain_pp'] >= need else '<'} +{need:g} pp)")
+    return g["score_gain_pp"] >= need, msg, g
 
 
 def run_rounds(cfg: Config, yes: bool, allow_scan_hits: bool, ev: Evaluator | None = None,
@@ -175,8 +186,10 @@ def run_rounds(cfg: Config, yes: bool, allow_scan_hits: bool, ev: Evaluator | No
         before = ledger_total(cfg)
         tr = ev.evaluate(name, "train")
         va = ev.evaluate(name, "val")
-        rec.update(evaluated=True, train=short(tr), val=short(va), eval_usd=ledger_total(cfg) - before,
-                   train_summary=tr, val_summary_aggregate=short(va))
+        rec.update(evaluated=True, train=short(tr), val=short(va), train_summary=tr, val_summary_aggregate=short(va))
+        if "test" in eval_splits(cfg):  # recorded only: decide() and the feedback never read it
+            rec["test"] = short(ev.evaluate(name, "test"))
+        rec["eval_usd"] = ledger_total(cfg) - before
         kept, why, gain = decide(cfg, st, name)
         rec.update(kept=kept, reason=why, gain=gain)
         if kept:
@@ -184,10 +197,15 @@ def run_rounds(cfg: Config, yes: bool, allow_scan_hits: bool, ev: Evaluator | No
         st["rounds"].append(rec)
         save_state(cfg, st)
         write_report(cfg, st)
-        print(f"round {k}: {name} train {tr['all']['hits']}/{tr['all']['n']}, val {va['all']['hits']}/{va['all']['n']} "
+        print(f"round {k}: {name} train score {_pct(tr.get('score'))}, val score {_pct(va.get('score'))}"
+              f"{', test score ' + _pct(rec['test'].get('score')) if rec.get('test') else ''} "
               f"-> {'KEPT' if kept else 'rejected'} ({why}); best = {st['best']}", flush=True)
     write_report(cfg, st)
     return st
+
+
+def _pct(x: float | None) -> str:
+    return "-" if x is None else f"{100 * x:.1f}%"
 
 
 def run_final(cfg: Config, yes: bool, ev: Evaluator | None = None) -> dict[str, Any]:
@@ -197,9 +215,10 @@ def run_final(cfg: Config, yes: bool, ev: Evaluator | None = None) -> dict[str, 
     if not st.get("best"):
         raise SystemExit("no best harness")
     names = list(dict.fromkeys([st["best"], "h000"]))
-    n = len(task_ids(cfg, "test")) * len(names)
+    todo = [h for h in names if len(load_scores(cfg, h, "test")) < len(task_ids(cfg, "test"))]
+    n = sum(len(task_ids(cfg, "test")) - len(load_scores(cfg, h, "test")) for h in todo)
     est = n * per_task_estimate(cfg, st)
-    if not confirm(f"run the test split ONCE on {names} ({n} task runs, up to ${est:.2f})?", yes):
+    if todo and not confirm(f"run the test split on {todo} ({n} task runs, up to ${est:.2f})?", yes):
         raise SystemExit("not run")
     ev = ev or make_evaluator(cfg)
     st["final"] = {h: ev.evaluate(h, "test") for h in names}

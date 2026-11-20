@@ -4,17 +4,16 @@
   operation map, with each task's shuffle seed, lives in truth/task_map.json and is reused on rebuild.
 - Merges show both pre-edit segments; splits show the single pre-edit segment; order shuffled with
   the task seed. No navigation, camera position, annotations, title, or operation ID; nothing after T.
-- Negative tasks (no edit needed; truth/negatives/, from build/build_negatives.py): the edit's result
-  just after it (T_post), in the source operation's split. Only eligible ones (the edit survived; for
-  `no_split`, nothing was split off later).
+- Negative tasks (no edit needed; truth/negatives/<negative_id>.json, from build/build_negatives.py):
+  proofread neurons at their time T, in the split their record names. Only eligible ones.
 - tasks/index.json lists the task IDs of each split (no operation IDs), so the outer harness can find
   a split's tasks without reading truth/, and which of them are negatives.
 - A harness never sees these raw segment ids: the outer harness hands it the task's aliases
   (services/aliases.py).
 
 Checks: root counts match the type; no task file contains an operation ID or a coordinate; an edit
-task holds no post-edit root and its time is before the edit; a negative task holds no pre-edit root
-and its time is after the edit; only whitelisted keys appear.
+task holds no post-edit root and its time is before the edit; a negative task holds no root of any edit
+task (pre or post) and no operation ID; only whitelisted keys appear.
 
     .venv/bin/python -m build.build_states
 """
@@ -27,12 +26,13 @@ import secrets
 from datetime import datetime
 from typing import Any
 
+from build.build_negatives import NEGATIVE_VERSION
 from build.make_splits import read_operations
 from outer.config import load_config
 
 STATE_VERSION = "1"
-INDEX_VERSION = "2"     # 2: negatives
-TASK_MAP_VERSION = "2"  # 2: negatives
+INDEX_VERSION = "3"     # 2: negatives; 3: proofread-neuron negatives (negative_version 2)
+TASK_MAP_VERSION = "3"  # 2: negatives; 3: negatives keyed by negative_id
 
 ALLOWED_KEYS = {"state_version", "task_id", "timestamp_utc", "neuroglancer", "layers", "type", "name",
                 "source", "segments", "timestamp"}
@@ -93,8 +93,10 @@ def check_state(state: dict[str, Any], truth: dict[str, Any]) -> list[str]:
     return problems
 
 
-def check_negative_state(state: dict[str, Any], neg: dict[str, Any], source: dict[str, Any]) -> list[str]:
-    """Leak checks for a negative task file (neg: truth/negatives/<op>.json, source: truth/<op>.json)."""
+def check_negative_state(state: dict[str, Any], neg: dict[str, Any], edit_roots: set[str],
+                         operation_ids: set[str]) -> list[str]:
+    """Leak checks for a negative task file (neg: truth/negatives/<negative_id>.json; edit_roots: every
+    pre- and post-edit root of the edit operations; operation_ids: theirs)."""
     problems = []
     keys: set[str] = set()
     values: list[Any] = []
@@ -102,18 +104,29 @@ def check_negative_state(state: dict[str, Any], neg: dict[str, Any], source: dic
     if keys - ALLOWED_KEYS:
         problems.append(f"unexpected keys {sorted(keys - ALLOWED_KEYS)}")
     strs = {str(v) for v in values}
-    if source["operation_id"] in strs:
-        problems.append("contains the operation ID")
-    if (set(source["pre_edit_roots"]) - set(source["post_edit_roots"])) & strs:
-        problems.append("contains a pre-edit root")
+    if operation_ids & strs:
+        problems.append("contains an operation ID")
+    if edit_roots & strs:
+        problems.append("contains a root of an edit task")
     if any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
         problems.append("contains a number (task files hold only strings; no coordinates)")
     segs = state["neuroglancer"]["layers"][1]["segments"]
     if len(segs) != (1 if neg["kind"] == "no_split" else 2) or set(segs) != set(neg["segments"]):
         problems.append(f"segments {segs} do not match the {neg['kind']} segments")
-    if datetime.fromisoformat(state["timestamp_utc"]) <= datetime.fromisoformat(source["timestamp_utc"]):
-        problems.append("task time is not after the edit")
+    if datetime.fromisoformat(state["timestamp_utc"]) != datetime.fromisoformat(neg["t_utc"]):
+        problems.append("task time is not the negative's time")
+    if datetime.fromisoformat(state["timestamp_utc"]).microsecond % 1000:
+        problems.append("task time is finer than milliseconds (edit tasks' times are whole milliseconds)")
     return problems
+
+
+def in_splits_of(splits: dict[str, Any]) -> list[str]:
+    return [op for k in ("train", "val", "test") for op in splits[k]]
+
+
+def _edit_roots(root: Any, op: str) -> list[str]:
+    tr = json.loads((root / "truth" / f"{op}.json").read_text())
+    return [str(r) for r in tr["pre_edit_roots"] + tr["post_edit_roots"]]
 
 
 def new_task_id(used: set[str]) -> str:
@@ -159,29 +172,35 @@ def main() -> None:
                 continue
             (tasks_dir / f"{tm['task_id']}.json").write_text(json.dumps(state, indent=1) + "\n")
             index[split].append(tm["task_id"])
-            npath = root / "truth" / "negatives" / f"{op}.json"
-            neg = json.loads(npath.read_text()) if npath.exists() else None
-            if not neg or not neg["eligible"]:
-                neg_map.pop(op, None)
-                continue
-            if op not in neg_map:
-                neg_map[op] = {"task_id": new_task_id(used), "seed": secrets.randbits(32), "split": split}
-            nm = neg_map[op]
-            nm["split"] = split
-            state = make_state(nm["task_id"], nm["seed"], neg, cfg["flywire"]["em_source"])
-            problems = check_negative_state(state, neg, truth)
-            if problems:
-                n_problems += 1
-                print(f"  negative of {op}: {problems}")
-                continue
-            (tasks_dir / f"{nm['task_id']}.json").write_text(json.dumps(state, indent=1) + "\n")
-            index[split].append(nm["task_id"])
-            negatives.append(nm["task_id"])
+    edit_roots = {r for op in in_splits_of(splits) for r in _edit_roots(root, op)}
+    op_ids = set(ops) | set(in_splits_of(splits))
+    live_negs: set[str] = set()
+    for npath in sorted((root / "truth" / "negatives").glob("*.json")):
+        neg = json.loads(npath.read_text())
+        if neg.get("negative_version") != NEGATIVE_VERSION or not neg.get("eligible"):
+            continue
+        nid, split = neg["negative_id"], neg["split"]
+        live_negs.add(nid)
+        if nid not in neg_map:
+            neg_map[nid] = {"task_id": new_task_id(used), "seed": secrets.randbits(32), "split": split}
+        nm = neg_map[nid]
+        nm["split"] = split
+        state = make_state(nm["task_id"], nm["seed"], neg, cfg["flywire"]["em_source"])
+        problems = check_negative_state(state, neg, edit_roots, op_ids)
+        if problems:
+            n_problems += 1
+            print(f"  negative {nid}: {problems}")
+            continue
+        (tasks_dir / f"{nm['task_id']}.json").write_text(json.dumps(state, indent=1) + "\n")
+        index[split].append(nm["task_id"])
+        negatives.append(nm["task_id"])
+    for split in ("train", "val", "test"):
         index[split].sort()
+    for nid in [k for k in neg_map if k not in live_negs]:  # older negatives (by operation id) leave the map
+        del neg_map[nid]
     in_splits = {op for k in ("train", "val", "test") for op in splits[k]}
-    for m in (task_map, neg_map):  # operations replaced in the splits (build/replace_splits.py) leave the map
-        for op in [op for op in m if op not in in_splits]:
-            del m[op]
+    for op in [op for op in task_map if op not in in_splits]:  # replaced operations (build/replace_splits.py)
+        del task_map[op]
     keep = {f"{v['task_id']}.json" for v in (*task_map.values(), *neg_map.values())} | {"index.json"}
     for p in tasks_dir.glob("*.json"):
         if p.name not in keep:

@@ -3,7 +3,7 @@
 | Phase | Status | Notes |
 |---|---|---|
 | 0. Scaffold | done | CSV pinned (sha256 `00a51c046bee2682…`), splits 100/50/50 stratified, seed 0 |
-| 1. Truth and tasks | done | 200/200 operations, 0 problems; 200 task files pass the leak checks |
+| 1. Truth and tasks | done | 200 edits (operations_v3) + 800 proofread-neuron negatives; 1000 task files pass the leak checks |
 | 2. `world` service | done | fake-backend tests + live check on 2 train tasks |
 | 3. `llm` proxy | done | fake-upstream tests: streaming, usage, caps, allowlist, transcripts |
 | 4. Evaluate and score | done | oracle 100% / offset 0% / trivial harness on all train tasks, in Apptainer; real-data oracle 95/100 |
@@ -11,7 +11,7 @@
 | 6. The loop | code done, dry run passed | waiting for `budget_usd.total` |
 | 7. Final evaluation | code ready | not run |
 
-Tests: `.venv/bin/python -m pytest -q` → 60 passed, 3 skipped (live); `--live` → 3 passed.
+Tests: `.venv/bin/python -m pytest -q` → 72 passed, 5 skipped (live); `--live` → 5 passed (2026-11-20).
 
 ## Phase 0 (2026-11-17)
 
@@ -172,6 +172,48 @@ Tests: `.venv/bin/python -m pytest -q` → 60 passed, 3 skipped (live); `--live`
 - Checks: the real-data snap oracle hits 159/163 train tasks (merge 47/50, split 49/50, no-edit
   63/63); offline tests 67 passed; live tests 5 passed.
 
+## Proofread-neuron negatives, per-kind score, test every round, glia out (2026-11-20, user request)
+
+- **Old negatives removed** (negative_version 1: the state just after an edit). **New negatives**
+  (`build/build_negatives.py`, negative_version 2), from `proofread_neurons` at materialization 783:
+  - `no_merge` (400): two proofread neurons sharing >= 5 synapses (A->B + B->A, `synapses_nt_v1`,
+    cleft_score > 50, no autapses); median 8 synapses (range 5-176).
+  - `no_split` (400): one proofread neuron.
+  - Glia out: every proofread neuron has a neuron super_class (none is glia); 137 more tagged "not a
+    neuron" / glia / trachea in `neuron_information_v2` are dropped. Also dropped: the 305 neurons
+    holding one of the 200 edits, and every edit root. Each neuron used once (no neuron in two splits).
+  - **Dating:** T = a random edit time of the matching type (merge times for no_merge, split times for
+    no_split) +- 14 days, strictly inside the edit range, in whole milliseconds; only neurons whose 783
+    root existed before T. Quantiles match the edit tasks (medians: no_merge 2022-01 vs merge 2021-09;
+    no_split 2022-02 vs split 2022-01). **Leak found and fixed:** CAVE edit times are whole
+    milliseconds, so the first build's microsecond digits marked 790/800 negatives; `build_states`
+    now refuses finer-than-ms negative times.
+  - Splits (user): 200 / 100 / 100 per kind. Tasks: train 500 (100 edit + 400 negative), val 250
+    (50 + 200), test 250 (50 + 200). index_version 3, task_map_version 3.
+  - **Size cue (for the user):** sampled L2-chunk medians: split 667 vs no_split 141; merge larger
+    segment 645 vs no_merge 287. Negatives are smaller, so "big single segment -> split" is a possible
+    shortcut (edit segments were sampled with >= 100 L2 chunks per side, and a false merge holds two
+    cells). Not corrected.
+- **Glia in edit tasks:** 16 of the 200 edits sat on a root tagged not a neuron / glia / trachea at 783
+  (2 merges of two such pieces; 14 splits cutting one off a neuron). Replaced (user) by
+  `build/replace_edits.py`: replays the source sampler for merges and splits (reproduces the original
+  100 + 100 exactly), takes the next eligible operations that are clean (splits: also survived), in
+  each replaced one's slot. `data/operations_v3.csv` (sha256 `cc5a2dad…`), `data/splits.json`
+  version 3. Now 0 edits on a tagged root; 2 (632411, 1715495) sit on roots with no annotation at all
+  (untagged fragments; left in).
+- **Scoring (score_version 3):** score = mean of the per-kind hit rates (merge, split, no_merge,
+  no_split); "always none" = 50%. Keep rule (loop_version 2): val score gain >= 2 pp
+  (`loop.accept_min_gain_pp`), paired on the same tasks.
+- **Test every round** (`loop.evaluate_test_every_round`, user): every evaluated harness also runs on
+  test; recorded in loop_state and report.md only. `decide()` reads val only; feedback (version 2)
+  carries no test result, even aggregate (tested). `--final` reuses the per-round test runs.
+  CLAUDE.md rule 7 and PLAN.md updated.
+- TASK.md version 3 (new negatives described without the selection rule; per-kind score);
+  meta_revise.md version 3; config_version 2; report_version 3.
+- h001-h004 and runs/ are from the old tasks; not re-evaluated (user: optimization restarts from
+  scratch on the new data). Move `runs/loop_state.json` (and old `runs/h*`) aside before restarting.
+- Checks: offline tests 72 passed; live tests 5 passed (snap oracle 40/40 on the first 40 train tasks).
+
 ## Files added beyond PLAN.md Section 9 (for the user to confirm)
 
 `PROGRESS.md`; `__init__.py` files; `outer/config.py` (config loading, CSV hash check, token secret);
@@ -181,11 +223,14 @@ meta_revise.md}`; `services/tokens.py`; `services/httpserver.py`; `tasks/index.j
 `runs/loop_state.json`, `runs/world_requests.jsonl`, `runs/live_oracle_check.json`;
 `build/build_negatives.py`, `build/replace_splits.py`, `data/operations_v2.csv`, `truth/negatives/`,
 `services/aliases.py`,
-`outer/prompts/proofreading_guide.md` (negatives, opaque ids, the guide).
+`outer/prompts/proofreading_guide.md` (negatives, opaque ids, the guide);
+`build/replace_edits.py`, `data/operations_v3.csv`, `truth/negatives/synapse_cache.json`,
+`runs/build_negatives.log`, `runs/replace_edits.log` (2026-11-20).
 New config keys: `config_version`, `data.source_path`, `data.sha256_prefix`, `flywire.*`,
 explicit cache prices, `limits.parallel_tasks`, `limits.meta_wall_s`, `world.socket`,
 `world.max_cutout_voxels`, `world.max_roots_per_call`, `proxy.socket`, `proxy.upstream`,
-`proxy.api_key_file`, `secrets.*`, `sandbox.*`, `negatives.*`.
+`proxy.api_key_file`, `secrets.*`, `sandbox.*`, `negatives.*`, `loop.accept_min_gain_pp`,
+`loop.evaluate_test_every_round`.
 
 ## Open items for the user
 

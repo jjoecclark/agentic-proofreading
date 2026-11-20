@@ -54,7 +54,9 @@ class Env:
 
 
 def make_env(n_strips: int = 4, reply: Any = None, per_task_usd: float = 2.0,
-             negatives: bool = False) -> tuple[Env, list[Any]]:
+             negatives: bool = False, test_strips: int = 0) -> tuple[Env, list[Any]]:
+    """A fake repo: the first half of the strips (at least 2) are train, the last `test_strips` are test,
+    the rest val."""
     root = Path(tempfile.mkdtemp(prefix="fw", dir="/tmp"))
     cfg_doc = yaml.safe_load((ROOT / "config.yaml").read_text())
     cfg_doc["world"].update(socket=str(root / "w.sock"), cache_dir=str(root / "cache"), port=None)
@@ -70,21 +72,22 @@ def make_env(n_strips: int = 4, reply: Any = None, per_task_usd: float = 2.0,
     (root / "truth").mkdir()
     negs = fake_negatives(truths) if negatives else {}
     (root / "truth" / "negatives").mkdir()
-    index: dict[str, Any] = {"index_version": "2", "train": [], "val": [], "test": [], "negative": sorted(negs)}
+    index: dict[str, Any] = {"index_version": "3", "train": [], "val": [], "test": [], "negative": sorted(negs)}
     for j, (tid, tr) in enumerate(sorted(truths.items())):
-        split = "train" if j < max(2, len(truths) // 2) else "val"
+        split = ("train" if j < max(2, (len(truths) - test_strips) // 2)
+                 else "test" if j >= len(truths) - test_strips else "val")
         (root / "tasks" / f"{tid}.json").write_text(json.dumps(fake_state(tid, tr)))
         (root / "truth" / f"{tr['operation_id']}.json").write_text(json.dumps(tr))
         index[split].append(tid)
         nid = tid.replace("t_fake", "t_fneg")
-        if nid in negs:  # a negative goes to its source operation's split
+        if nid in negs:
             (root / "tasks" / f"{nid}.json").write_text(json.dumps(fake_state(nid, negs[nid])))
-            (root / "truth" / "negatives" / f"{tr['operation_id']}.json").write_text(json.dumps(negs[nid]))
+            (root / "truth" / "negatives" / f"{negs[nid]['negative_id']}.json").write_text(json.dumps(negs[nid]))
             index[split].append(nid)
     (root / "tasks" / "index.json").write_text(json.dumps(index))
-    (root / "truth" / "task_map.json").write_text(json.dumps({"task_map_version": "2", "operations": {
+    (root / "truth" / "task_map.json").write_text(json.dumps({"task_map_version": "3", "operations": {
         tr["operation_id"]: {"task_id": tid, "seed": 7} for tid, tr in truths.items()}, "negatives": {
-        n["source_operation_id"]: {"task_id": nid, "seed": 7} for nid, n in negs.items()}}))
+        n["negative_id"]: {"task_id": nid, "seed": 7} for nid, n in negs.items()}}))
     secret = token_secret(cfg)
     upstream = FakeUpstream(reply)
     papp = proxy_mod.LLMProxy(secret, Ledger(root / "ledger.jsonl"), cfg["prices_usd_per_mtok"], upstream.url,

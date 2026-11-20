@@ -12,7 +12,7 @@ harness. The design is PLAN.md; progress and decisions are in PROGRESS.md.
 3. Only `build/` and `outer/score.py` read `truth/`. Nothing a harness or the meta-agent can see
    contains operation IDs, edit coordinates, val/test tasks, or raw root/L2 ids (they see per-task
    aliases, `services/aliases.py`). An edit task never shows its own post-edit roots; a negative
-   (no-edit) task shows an edit's results by design, never next to that edit's pre-edit roots.
+   (no-edit) task shows proofread neurons (no glia) and never any edit task's roots.
 4. Positions are in nm, (x, y, z) order, in all code and files. Arrays are indexed (z, y, x).
    Names end in `_nm_xyz` or `_zyx`.
 5. Do not hand-edit generated harnesses under `harnesses/`. Fixes go into prompts, feedback, or
@@ -20,7 +20,8 @@ harness. The design is PLAN.md; progress and decisions are in PROGRESS.md.
 6. Tests never touch the network or the real API (fake world, fake upstream). Tests that read real
    FlyWire data are marked `live` and run only with `--live`; none of them call the Claude API.
 7. Ask the user before: any step expected to cost more than `budget_usd.ask_above`; running the
-   test split; changing the splits, the scoring rule, or `R`; adding files outside the layout in
+   test split (except the per-round test runs of `outer/loop.py`, approved 2026-11-20: recorded only,
+   never used to keep a revision, never shown to the meta-agent); changing the splits, the scoring rule, or `R`; adding files outside the layout in
    PLAN.md Section 9 (approved additions are listed in PROGRESS.md).
 8. Every file format carries a version string (`state_version`, `decision_version`,
    `score_version`, world API version, ledger version, ...). Bump it on any change.

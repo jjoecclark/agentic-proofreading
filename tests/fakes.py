@@ -189,18 +189,16 @@ def fake_truths(backend: FakeBackend) -> dict[str, dict[str, Any]]:
 
 
 def fake_negatives(truths: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """task_id -> negative truth (same schema as truth/negatives/<op>.json): each strip just after its
-    edit. A merge strip gives a no_split task (the merged root), a split strip a no_merge task."""
+    """task_id -> negative truth (the fields of truth/negatives/<negative_id>.json that scoring and the
+    world use). The fake world has no proofread neurons, so each strip's state just after its edit stands
+    in: a merge strip gives a no_split task (one root), a split strip a no_merge task (two roots)."""
     out = {}
-    for tid, tr in sorted(truths.items()):
-        merge = tr["operation_type"] == "merge"
+    for i, (tid, tr) in enumerate(sorted(truths.items())):
+        kind = "no_split" if tr["operation_type"] == "merge" else "no_merge"
         out[tid.replace("t_fake", "t_fneg")] = {
-            "negative_version": "1", "source_operation_id": tr["operation_id"],
-            "source_operation_type": tr["operation_type"], "operation_type": "none",
-            "kind": "no_split" if merge else "no_merge", "t_utc": tr["t_post_utc"],
-            "source_timestamp_utc": tr["timestamp_utc"], "segmentation_source": tr["segmentation_source"],
-            "segments": list(tr["post_edit_roots"]), "source_edit_survived": True, "eligible": True,
-            "problems": []}
+            "negative_version": "2", "negative_id": f"{kind}_{i:04d}", "kind": kind, "operation_type": "none",
+            "t_utc": tr["t_post_utc"], "segmentation_source": tr["segmentation_source"],
+            "segments": list(tr["post_edit_roots"]), "eligible": True, "problems": []}
     return out
 
 

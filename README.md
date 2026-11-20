@@ -36,7 +36,7 @@ Data (already built; rerun only if needed):
 .venv/bin/python -m build.make_splits      # data/splits.json (frozen)
 .venv/bin/python -m build.build_truth      # truth/<operation_id>.json (gitignored)
 .venv/bin/python -m build.replace_splits   # done once: data/operations_v2.csv, splits.json v2 (surviving splits)
-.venv/bin/python -m build.build_negatives  # truth/negatives/<operation_id>.json: no-edit tasks (~10 min)
+.venv/bin/python -m build.build_negatives --report  # truth/negatives/<negative_id>.json: 800 proofread-neuron no-edit tasks
 .venv/bin/python -m build.build_states     # tasks/<task_id>.json + tasks/index.json (edit + no-edit tasks)
 ```
 
@@ -55,7 +55,7 @@ Both run on della-vis1 and stay up while you work (use `tmux` so they survive lo
 .venv/bin/python -m outer.create --yes                      # Phase 5: meta-agent writes harnesses/h000 (<= $50)
 .venv/bin/python -m outer.evaluate h000 train --tasks t_... # evaluate on some train tasks
 .venv/bin/python -m outer.loop --yes                        # Phase 6: rounds within budget_usd.total
-.venv/bin/python -m outer.loop --final --yes                # Phase 7: best and h000 on test, once
+.venv/bin/python -m outer.loop --final --yes                # Phase 7: best vs h000 on test (reuses per-round test runs)
 .venv/bin/python -m outer.report                            # runs/report.md
 ```
 

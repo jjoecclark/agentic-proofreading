@@ -9,7 +9,8 @@ Contents:
 - notes/<harness>_NOTES.md: every earlier NOTES.md
 - rejected/<harness>/ (if the last revision was rejected): its code, train summary, per-task train scores
 
-Never included: per-task val or test results, truth, operation IDs, edit coordinates.
+Never included: per-task val results, any test result (not even aggregate: test runs every round for
+the record, outer/loop.py), truth, operation IDs, edit coordinates.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from outer.config import Config
 from outer.evaluate import task_ids
 from outer.sandbox import copy_tree
 
-FEEDBACK_VERSION = "1"
+FEEDBACK_VERSION = "2"  # 2: per-kind score; test never included
 RUN_FILES = ("score.json", "decision.json", "transcript.jsonl", "error.json", "usage.json")
 LOG_TAIL_BYTES = 200_000
 
@@ -34,6 +35,7 @@ def short(summary: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     out = {k: {"n": summary[k]["n"], "hits": summary[k]["hits"], "hit_rate": summary[k]["hit_rate"]}
            for k in ("all", "edit", "no_edit", "merge", "split", "no_merge", "no_split") if k in summary}
+    out["score"] = summary.get("score")
     out["usd_total"] = summary.get("usd_total")
     return out
 
@@ -54,9 +56,10 @@ def copy_run(src: Path, dst: Path, files: tuple[str, ...] = RUN_FILES, with_medi
 def history_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for r in state.get("rounds", []):
-        rows.append({"round": r["round"], "harness": r.get("harness"), "kept": r.get("kept"),
+        rows.append({"round": r["round"], "harness": r.get("harness"), "kept": r.get("kept"),  # never r["test"]
                      "reason": r.get("reason"), "train": r.get("train"), "val": r.get("val"),
-                     "val_paired": {k: r["gain"][k] for k in ("n", "new_hits", "best_hits", "gain")} if r.get("gain") else None,
+                     "val_paired": {k: r["gain"].get(k) for k in ("n", "new_hits", "best_hits", "gain", "new_score",
+                                                                  "best_score", "score_gain_pp")} if r.get("gain") else None,
                      "meta_usd": r.get("meta_usd"), "probe_usd": r.get("probe_usd"), "eval_usd": r.get("eval_usd")})
     return rows
 
@@ -67,10 +70,15 @@ def _rate(b: dict[str, Any] | None, k: str) -> str:
     return f"{b[k]['hits']}/{b[k]['n']}"
 
 
+def _score(b: dict[str, Any] | None) -> str:
+    return "-" if not b or b.get("score") is None else f"{100 * b['score']:.1f}%"
+
+
 def readme(round_k: int, best: str, rows: list[dict[str, Any]], train_summary: dict[str, Any] | None,
            rejected: str | None) -> str:
     lines = [f"# Feedback for round {round_k}", "",
-             f"`/work/harness/` is a copy of **{best}**, the best harness so far (highest validation hits).", "",
+             f"`/work/harness/` is a copy of **{best}**, the best harness so far (highest validation score).", "",
+             "Score = the mean of the hit rates of the four task kinds (merge, split, no_merge, no_split).", "",
              "## Files", "",
              f"- `train/<task_id>/`: {best}'s result on each train task: `score.json` (hit, miss_reason, distance_nm,"
              " usd, wall_s), `decision.json`, `transcript.jsonl` (every Claude request and response; images in"
@@ -83,12 +91,15 @@ def readme(round_k: int, best: str, rows: list[dict[str, Any]], train_summary: d
         lines.append(f"- `rejected/{rejected}/`: the last revision, which was **not kept**: its code, train summary,"
                      " and per-task train scores. Learn from it; the next harness starts again from the best.")
     lines += ["", "## History (validation: aggregate only)", "",
-              "| round | harness | train all | train merge | train split | val all | val merge | val split | kept | why |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "| round | harness | train score | train merge | train split | train no_merge | train no_split | "
+              "val score | val merge | val split | val no_merge | val no_split | kept | why |",
+              "|" + "---|" * 14]
     for r in rows:
-        lines.append(f"| {r['round']} | {r['harness']} | {_rate(r['train'], 'all')} | {_rate(r['train'], 'merge')} | "
-                     f"{_rate(r['train'], 'split')} | {_rate(r['val'], 'all')} | {_rate(r['val'], 'merge')} | "
-                     f"{_rate(r['val'], 'split')} | {'yes' if r['kept'] else 'no'} | {r.get('reason') or ''} |")
+        tr, va = r["train"], r["val"]
+        lines.append(f"| {r['round']} | {r['harness']} | {_score(tr)} | {_rate(tr, 'merge')} | {_rate(tr, 'split')} | "
+                     f"{_rate(tr, 'no_merge')} | {_rate(tr, 'no_split')} | {_score(va)} | {_rate(va, 'merge')} | "
+                     f"{_rate(va, 'split')} | {_rate(va, 'no_merge')} | {_rate(va, 'no_split')} | "
+                     f"{'yes' if r['kept'] else 'no'} | {r.get('reason') or ''} |")
     if train_summary:
         lines += ["", f"## {best} on train", "",
                   f"- miss reasons: {json.dumps(train_summary.get('miss_reasons'))}",

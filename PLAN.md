@@ -19,7 +19,8 @@ We build two layers.
  round 0:  meta-agent ── writes ──► harnesses/h000
  round k:  evaluate hK on train + val ──► score ──► feedback (train only) ──► meta-agent ── writes ──► hK+1
            keep hK+1 if val improves beyond noise; otherwise revise again from the best version
- end:      evaluate the best harness and h000 on test, once
+           (each hK also runs on test, recorded only: never used to keep, never shown to the meta-agent)
+ end:      compare the best harness and h000 on test
 ```
 
 Ground truth comes from 200 FlyWire operations (100 merges, 100 splits) sampled by
@@ -60,6 +61,11 @@ design:
   `after_root_ids`. Root IDs are decimal strings and must stay strings (64-bit rounding).
 - Caveat (from the source repo): operations are edits, not independently verified errors. A
   few may be wrong or undone later. We keep all 200 and accept this noise.
+- Replacements (user requests), each by the next eligible operation of the source sampler's own draw,
+  in the replaced one's slot: the 17 splits that did not survive to materialization 783
+  (`build/replace_splits.py`, `operations_v2.csv`), then the 16 edits on a root tagged glia / not a
+  neuron / trachea (`build/replace_edits.py`, `operations_v3.csv`, 2026-11-20). `config.yaml` points
+  at the current CSV.
 
 ### 3.2 Splits
 
@@ -69,7 +75,12 @@ splits), fixed seed, frozen after creation.
 - **train**: the meta-agent sees these tasks and their per-task results.
 - **val**: used by the outer loop to accept or reject a revision. The meta-agent sees only
   each round's aggregate val hit rate and whether its revision was kept.
-- **test**: run once at the end, on the final harness and on `h000`.
+- **test**: every evaluated harness also runs on test, for the record (user, 2026-11-20). Test results
+  never decide what is kept and never reach the meta-agent, not even in aggregate. The final report
+  compares the best harness and `h000` on test.
+
+Negative (no-edit) tasks are added to each split (Section 4.3): 200 / 100 / 100 `no_merge` and the
+same for `no_split`, with no neuron in two splits. Totals: train 500, val 250, test 250.
 
 ### 3.3 Truth (`build/build_truth.py`)
 
@@ -125,10 +136,24 @@ All positions are in nm, (x, y, z) order.
 {"decision_version": "1", "action": "none"}
 ```
 
-An optional `"notes"` string is stored but not scored. Every task has exactly one true edit;
-there are no negative tasks.
+An optional `"notes"` string is stored but not scored. An edit task has exactly one true edit; a
+negative task (4.3) has none, and its right answer is `none`.
 
-## 5. Scoring (`outer/score.py`, `score_version` 1)
+### 4.3 Negative tasks (`build/build_negatives.py`, `negative_version` 2; user, 2026-11-20)
+
+Built from FlyWire's proofread neurons (`proofread_neurons` at materialization 783):
+
+- `no_merge` (400): two proofread neurons that share >= 5 synapses (A->B plus B->A, `synapses_nt_v1`,
+  cleft score > 50). They touch but are different cells.
+- `no_split` (400): one proofread neuron.
+- Glia are excluded: only neurons with a neuron super_class, minus anything tagged glia / not a neuron /
+  trachea in `neuron_information_v2`. Neurons holding one of the 200 edits are excluded too. Each neuron
+  is used once.
+- Dated like the edit tasks: T is an edit time of the matching edit type (+- 14 days), and only neurons
+  whose 783 root already existed at T qualify, so the segment at T is the proofread neuron. Otherwise
+  the timestamp alone would give away the answer.
+
+## 5. Scoring (`outer/score.py`, `score_version` 3)
 
 Hit radius **R = 2 µm** (`scoring.hit_radius_um`).
 
@@ -140,15 +165,19 @@ supervoxel layer) maps to root X at time t. A point on background (supervoxel 0)
 - **Split hit**: `action` is `split`, there is ≥ 1 source and ≥ 1 sink, every point lies on the
   pre-edit root at T, all sources lie on one post-edit root and all sinks on the other at
   T + 2 ms, and **the midpoint of the closest source–sink pair is within R of the edit center**.
-- Everything else is a miss: `none`, a wrong action, invalid JSON, a crash, a timeout, or an
-  exhausted budget. The reason is recorded.
+- **No-edit hit** (negative tasks): `action` is `none`. Any edit is a miss (`edit_not_needed`).
+- Everything else is a miss: `none` on an edit task, a wrong action, invalid JSON, a crash, a timeout,
+  or an exhausted budget. The reason is recorded.
+
+The **score** of a set of tasks is the mean of the hit rates of its kinds (`merge`, `split`,
+`no_merge`, `no_split`), so each kind weighs the same (always answering `none` scores 50%).
 
 Reported per task: hit, miss reason, distance from the predicted location to the edit center
 (merge: midpoint of the two points; split: midpoint of the closest source–sink pair), cost,
 tokens, wall time.
 
-Reported per run: hit rate overall and per type with 95% CIs, median distance, cost per task,
-and counts of miss reasons.
+Reported per run: the score, hit rate overall and per kind with 95% CIs, median distance, cost per
+task, and counts of miss reasons.
 
 Checks in `tests/`: an oracle harness that reads truth must score 100%, and a harness that
 places points 5 µm away must score 0%.
@@ -271,17 +300,17 @@ Plain code, not an agent.
 
 1. Check the budget in the ledger.
 2. Create or revise a harness (Sections 8.2–8.3).
-3. Evaluate it on train and val.
-4. **Keep it** if its val hits exceed the best harness's by at least `loop.accept_min_gain`
-   tasks (default 3 of 50, paired on the same tasks). Otherwise the next round revises from the
+3. Evaluate it on train and val, and (`loop.evaluate_test_every_round`) on test, for the record only.
+4. **Keep it** if its val score exceeds the best harness's by at least `loop.accept_min_gain_pp`
+   percentage points (2, paired on the same tasks). Otherwise the next round revises from the
    best harness, and the feedback says the attempt was rejected and why.
 5. Stop after `loop.max_rounds` rounds, after `loop.plateau_rounds` rounds in a row with no
    kept revision, or when the budget runs out.
-6. At the end, evaluate the best harness and `h000` on test (after asking the user) and write
-   the report.
+6. At the end, compare the best harness and `h000` on test (their per-round test runs are reused)
+   and write the report.
 
-`outer/report.py` writes `runs/report.md`: one row per round with train and val hit rates (by
-type), cost, and kept/rejected, plus the final test comparison.
+`outer/report.py` writes `runs/report.md`: one row per round with train, val and test scores, hit
+rates by kind, cost, and kept/rejected, plus the final test comparison.
 
 ## 9. Repo layout
 
@@ -390,7 +419,7 @@ Run the best harness and `h000` on test once, then write the report.
    the outer harness.
 6. Tests never touch the network or the real API (fake world, fake upstream).
 7. Ask the user before: any step expected to cost more than `budget_usd.ask_above`; running the
-   test split; changing the splits, the scoring rule, or `R`; adding files outside the layout in
+   test split (except the per-round test runs of `outer/loop.py`, approved 2026-11-20); changing the splits, the scoring rule, or `R`; adding files outside the layout in
    Section 9.
 8. Every file format carries a version string (`state_version`, `decision_version`,
    `score_version`, world API version, ledger version). Bump it on any change.

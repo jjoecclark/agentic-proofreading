@@ -16,3 +16,9 @@ runs/*
 !runs/report.md
 feedback/**/transcript.jsonl
 feedback/**/workdir/
+
+# not in git (user, 2026-11-20): old-round feedback packets; meta-agent dev files under harnesses
+# (h003/h004 dev/ hold true train edit locations recovered from score_train probes)
+feedback/
+harnesses/*/dev/
+harnesses/*/devdata/
