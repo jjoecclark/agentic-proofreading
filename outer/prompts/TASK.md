@@ -1,6 +1,6 @@
 # TASK: build a FlyWire proofreading harness
 
-<!-- prompt_version 3 (task version 3; see "Changes" at the end). Placeholders in {braces} are filled from config.yaml by outer/create.py. -->
+<!-- prompt_version 5 (task version 5; see "Changes" at the end). Placeholders in {braces} are filled from config.yaml by outer/create.py. -->
 
 ## The task
 
@@ -85,9 +85,8 @@ Your **score** is the mean of the hit rates of the four task kinds (`merge`, `sp
 `no_split`), so each kind weighs the same however many tasks it has. Always answering `none` scores 50%.
 
 The true edit location is the mean of the points the human proofreader placed. Reported per task:
-its kind (`merge`, `split`, `no_merge`, `no_split`), hit/miss, the miss reason, the distance from your
-predicted location (merge: midpoint of your two points; split: midpoint of your closest source-sink
-pair) to the true location, cost, and wall time.
+its kind (`merge`, `split`, `no_merge`, `no_split`), hit/miss, the miss reason, cost, and wall time.
+The distance to the true location is not reported.
 
 Your harness is judged on **held-out tasks** you never see. Train tasks are for development only.
 
@@ -119,7 +118,19 @@ Your harness is judged on **held-out tasks** you never see. Train tasks are for 
   with HTTP 402 (`anthropic.APIStatusError`, status 402, type `budget_exceeded`). Size `max_tokens`
   to what you need and catch that error.
 - Pricing for `{model}`: input ${in_price:.2f}/M, output ${out_price:.2f}/M, cache read
-  ${cache_read:.2f}/M, cache write ${cache_write:.2f}/M (5-minute TTL) tokens. Prompt caching works.
+  ${cache_read:.2f}/M, cache write ${cache_write:.2f}/M (5-minute TTL) tokens.
+- Spending well (measured on earlier harnesses: about two thirds of their cost was output tokens, and
+  only half of their input came from cache):
+  - **Prompt caching is shared across tasks.** Every task uses the same account, and tasks run
+    {parallel} at a time, so a prefix that is byte-identical across tasks (fixed instructions, reference
+    text, examples) is written once and then read at ${cache_read:.2f}/M instead of ${in_price:.2f}/M. Put it
+    first and mark its end with `cache_control: {"type": "ephemeral"}`; put the task's own images and
+    data after it. Prefixes under 512 tokens are not cached, and any change in the prefix (a timestamp,
+    a task id, a different tool list) makes it miss. In a multi-turn loop, mark the latest turn too.
+  - **Output costs most.** `{model}` always thinks; `output_config: {"effort": "low" | "medium" |
+    "high" | ...}` sets how much (the default is `medium`). Use the lowest effort that keeps accuracy
+    for each kind of call, ask for short answers, and size `max_tokens` to the answer you need.
+  - `usage.cache_read_input_tokens` in each response shows whether the cache was hit.
 - If the harness runs Claude Code / the Claude Agent SDK, set `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (for
   example 16000) in its environment: by default it asks for 128000 output tokens per request, whose
   worst case ($2.56) exceeds the per-task budget, so every request would be refused.
@@ -142,7 +153,7 @@ Your harness is judged on **held-out tasks** you never see. Train tasks are for 
 - `/work/world_tokens.json`: world tokens for train tasks, to explore data yourself:
   `WorldClient(token=json.load(open('/work/world_tokens.json'))['t_...'])` (WORLD_SOCKET is set).
 - `score_train <task_id> ...`: snapshots `/work/harness`, runs it on those train tasks exactly as the
-  evaluation does (fresh sandbox per task, same limits), and prints hit/miss, miss reason, distance,
+  evaluation does (fresh sandbox per task, same limits), and prints hit/miss, miss reason,
   cost, and wall time per task. Details per task (decision, transcript, log, error) land in
   `/probe/results/<request>/<task_id>/`. It spends from your probe budget
   (**${probe_usd:.2f}** for this session); runs of up to ~{parallel} tasks proceed in parallel.
@@ -154,3 +165,5 @@ Your harness is judged on **held-out tasks** you never see. Train tasks are for 
   version 2); the proofreading guide in `/work/docs/`.
 - Version 3: new no-edit tasks (proofread neurons: two synapsing neurons, or one neuron), four times as
   many as edit tasks; the score is the mean of the per-kind hit rates.
+- Version 4: `score_train` and the feedback no longer report the distance to the true location.
+- Version 5: concrete advice on prompt caching across tasks and on `effort` (Limits and environment).

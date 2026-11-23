@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-SCORE_VERSION = "3"  # 2: negative tasks (kinds no_merge / no_split); 3: score = mean of per-kind hit rates
+SCORE_VERSION = "4"  # 2: negative tasks; 3: score = mean of per-kind hit rates; 4: true_location_nm_xyz (monitor)
 DECISION_VERSION = "1"
 
 # miss reasons
@@ -55,6 +55,16 @@ EDIT_NOT_NEEDED = "edit_not_needed"
 
 EDIT_KINDS = ("merge", "split")
 NEGATIVE_KINDS = ("no_merge", "no_split")
+
+
+def true_location(truth: dict[str, Any]) -> list[float] | None:
+    """Where to look at a task: the edit center, or a negative's first neuron's recorded point. Stored in
+    score.json for the outer harness's monitor (outer/dashboard_export.py); never shown to the meta-agent
+    (outer/feedback.py and score_train pass only whitelisted fields)."""
+    if truth.get("edit_center_nm_xyz") is not None:
+        return [float(v) for v in truth["edit_center_nm_xyz"]]
+    neurons = truth.get("neurons") or []
+    return [float(v) for v in neurons[0]["position_nm_xyz"]] if neurons else None
 
 
 def kind_of(truth_or_score: dict[str, Any]) -> str:
@@ -236,6 +246,7 @@ def score_run(run_dir: Path, task_id: str, truth: dict[str, Any], lookup: RootLo
         "task_id": task_id,
         "kind": kind_of(truth),
         "operation_type": truth["operation_type"],
+        "true_location_nm_xyz": true_location(truth),
         "action": action,
         **res,
         "usd": float(usage.get("usd") or 0.0),

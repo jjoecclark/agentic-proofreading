@@ -31,7 +31,7 @@ from services.llm.ledger import read_entries
 from services.llm.ledger import summarize as ledger_summary
 from services.tokens import run_token, world_token
 
-EVAL_VERSION = "1"
+EVAL_VERSION = "2"  # 2: score_train results carry no distance to the true location
 
 
 def task_ids(cfg: Config, split: str) -> list[str]:
@@ -190,7 +190,7 @@ def load_scores(cfg: Config, harness: str, split: str) -> dict[str, dict[str, An
 
 
 SCORE_TRAIN = r'''#!/usr/bin/env python3
-"""score_train: run the harness in /work/harness on train tasks and print hit/miss, distance, cost.
+"""score_train: run the harness in /work/harness on train tasks and print hit/miss, miss reason, cost.
 
     score_train t_0123abcd t_4567ef01 ...     run these train tasks (each in a fresh sandbox)
     score_train --all-examples                run the example tasks listed in /work/tasks/EXAMPLES
@@ -211,12 +211,10 @@ def wait(rid, timeout):
             if r.get("error"):
                 print("ERROR:", r["error"]); return 1
             print(f"request {rid}: {r['summary']}")
-            print(f"{'task':12} {'type':6} {'result':5} {'miss_reason':24} {'distance_um':>11} {'usd':>7} {'wall_s':>7}")
+            print(f"{'task':12} {'type':8} {'result':5} {'miss_reason':24} {'usd':>7} {'wall_s':>7}")
             for t in r["tasks"]:
-                d = t.get("distance_nm")
                 print(f"{t['task_id']:12} {t.get('kind') or t.get('operation_type','?'):8} {'HIT' if t['hit'] else 'miss':5} "
-                      f"{(t.get('miss_reason') or ''):24} {('-' if d is None else f'{d/1000:.2f}'):>11} "
-                      f"{t.get('usd',0):7.3f} {(t.get('wall_s') or 0):7.0f}")
+                      f"{(t.get('miss_reason') or ''):24} {t.get('usd',0):7.3f} {(t.get('wall_s') or 0):7.0f}")
             print(f"details: {os.path.join(PROBE, 'results', rid)}/<task_id>/")
             print(f"probe budget left: ${r.get('probe_budget_left_usd', float('nan')):.2f}")
             return 0
@@ -241,6 +239,12 @@ def main(a):
     return wait(rid, timeout)
 sys.exit(main(sys.argv[1:]))
 '''
+
+
+# what a score_train probe reports per task: no distance to the true location (a few probes at known
+# points would trilaterate it exactly) and no raw root ids
+PROBE_FIELDS = ("task_id", "kind", "operation_type", "action", "hit", "miss_reason", "usd", "wall_s", "tokens",
+                "requests")
 
 
 class ProbeServer:
@@ -312,9 +316,7 @@ class ProbeServer:
                         shutil.copy(rd / name, dst / name)
                 if (rd / "media").exists():
                     shutil.copytree(rd / "media", dst / "media", dirs_exist_ok=True)
-                keep = ("task_id", "kind", "operation_type", "action", "hit", "miss_reason", "distance_nm", "usd",
-                        "wall_s", "tokens", "requests")
-                return {k: s.get(k) for k in keep}
+                return {k: s.get(k) for k in PROBE_FIELDS}
 
             with ThreadPoolExecutor(max_workers=max(1, par)) as ex:
                 scores = list(ex.map(one, tids))

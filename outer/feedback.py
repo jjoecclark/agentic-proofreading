@@ -9,6 +9,9 @@ Contents:
 - notes/<harness>_NOTES.md: every earlier NOTES.md
 - rejected/<harness>/ (if the last revision was rejected): its code, train summary, per-task train scores
 
+Scores are sanitized (`meta_score`): hit, miss reason, kind, cost and time only. No distance to the true
+location (four probes at known points would trilaterate it exactly; h003/h004 did) and no raw root ids.
+
 Never included: per-task val results, any test result (not even aggregate: test runs every round for
 the record, outer/loop.py), truth, operation IDs, edit coordinates.
 """
@@ -24,9 +27,29 @@ from outer.config import Config
 from outer.evaluate import task_ids
 from outer.sandbox import copy_tree
 
-FEEDBACK_VERSION = "2"  # 2: per-kind score; test never included
+FEEDBACK_VERSION = "3"  # 2: per-kind score; test never included; 3: no distances, sanitized scores
 RUN_FILES = ("score.json", "decision.json", "transcript.jsonl", "error.json", "usage.json")
 LOG_TAIL_BYTES = 200_000
+
+
+# what the meta-agent may see of a task's score (no distance_nm, no point_roots_at_t: raw ids)
+META_SCORE_KEYS = ("score_version", "task_id", "kind", "operation_type", "action", "hit", "miss_reason", "usd",
+                   "tokens", "requests", "wall_s", "radius_nm")
+SUMMARY_BLOCK_KEYS = ("n", "hits", "hit_rate", "ci95")
+
+
+def meta_score(score: dict[str, Any]) -> dict[str, Any]:
+    return {k: score[k] for k in META_SCORE_KEYS if k in score}
+
+
+def meta_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """An evaluation summary without distances or task ids."""
+    out = {}
+    for k, v in summary.items():
+        if k in ("task_ids", "median_distance_nm"):
+            continue
+        out[k] = {b: v[b] for b in SUMMARY_BLOCK_KEYS if b in v} if isinstance(v, dict) and "hits" in v else v
+    return out
 
 
 def short(summary: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -43,7 +66,9 @@ def short(summary: dict[str, Any] | None) -> dict[str, Any] | None:
 def copy_run(src: Path, dst: Path, files: tuple[str, ...] = RUN_FILES, with_media: bool = True) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for f in files:
-        if (src / f).exists():
+        if f == "score.json" and (src / f).exists():
+            (dst / f).write_text(json.dumps(meta_score(json.loads((src / f).read_text())), indent=1) + "\n")
+        elif (src / f).exists():
             shutil.copy(src / f, dst / f)
     log = src / "run.log"
     if log.exists():
@@ -80,11 +105,12 @@ def readme(round_k: int, best: str, rows: list[dict[str, Any]], train_summary: d
              f"`/work/harness/` is a copy of **{best}**, the best harness so far (highest validation score).", "",
              "Score = the mean of the hit rates of the four task kinds (merge, split, no_merge, no_split).", "",
              "## Files", "",
-             f"- `train/<task_id>/`: {best}'s result on each train task: `score.json` (hit, miss_reason, distance_nm,"
-             " usd, wall_s), `decision.json`, `transcript.jsonl` (every Claude request and response; images in"
+             f"- `train/<task_id>/`: {best}'s result on each train task: `score.json` (hit, miss_reason,"
+             " usd, wall_s; no distance to the true location), `decision.json`,"
+             " `transcript.jsonl` (every Claude request and response; images in"
              " `media/`), `run.log` (stdout/stderr tail), `error.json` (if it crashed).",
-             "- `train_summary.json`: aggregate train results of the best harness (hit rates with 95% CIs, median"
-             " distance, cost, miss-reason counts).",
+             "- `train_summary.json`: aggregate train results of the best harness (score, hit rates with 95% CIs, cost,"
+             " miss-reason counts).",
              "- `history.json`: every round so far (below).",
              "- `notes/`: NOTES.md of every earlier harness."]
     if rejected:
@@ -103,7 +129,6 @@ def readme(round_k: int, best: str, rows: list[dict[str, Any]], train_summary: d
     if train_summary:
         lines += ["", f"## {best} on train", "",
                   f"- miss reasons: {json.dumps(train_summary.get('miss_reasons'))}",
-                  f"- median distance to the true location: {train_summary['all'].get('median_distance_nm')} nm",
                   f"- cost per task: ${(train_summary.get('usd_per_task') or 0):.3f}; median wall time "
                   f"{train_summary.get('median_wall_s')} s"]
     return "\n".join(lines) + "\n"
@@ -121,8 +146,7 @@ def build_feedback(cfg: Config, round_k: int, best: str, state: dict[str, Any], 
             copy_run(src, d / "train" / t)
     ts = None
     if (runs / best / "train" / "summary.json").exists():
-        ts = json.loads((runs / best / "train" / "summary.json").read_text())
-        ts.pop("task_ids", None)
+        ts = meta_summary(json.loads((runs / best / "train" / "summary.json").read_text()))
         (d / "train_summary.json").write_text(json.dumps(ts, indent=1) + "\n")
     rows = history_rows(state)
     (d / "history.json").write_text(json.dumps({"feedback_version": FEEDBACK_VERSION, "rounds": rows}, indent=1) + "\n")
@@ -136,8 +160,7 @@ def build_feedback(cfg: Config, round_k: int, best: str, state: dict[str, Any], 
         copy_tree(cfg.root / "harnesses" / rejected, rd / "harness")
         rs = runs / rejected / "train" / "summary.json"
         if rs.exists():
-            s = json.loads(rs.read_text())
-            s.pop("task_ids", None)
+            s = meta_summary(json.loads(rs.read_text()))
             (rd / "train_summary.json").write_text(json.dumps(s, indent=1) + "\n")
         for t in task_ids(cfg, "train"):
             src = runs / rejected / "train" / t

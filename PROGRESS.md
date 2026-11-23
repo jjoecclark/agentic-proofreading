@@ -7,7 +7,7 @@
 | 2. `world` service | done | fake-backend tests + live check on 2 train tasks |
 | 3. `llm` proxy | done | fake-upstream tests: streaming, usage, caps, allowlist, transcripts |
 | 4. Evaluate and score | done | oracle 100% / offset 0% / trivial harness on all train tasks, in Apptainer; real-data oracle 95/100 |
-| 5. Round 0 | done | h000: train 42/100 (merge 41/50, split 1/50); round cost $6.48 |
+| 5. Round 0 | to redo | old run (h000-h004, old tasks) archived 2026-11-22; restart from scratch |
 | 6. The loop | code done, dry run passed | waiting for `budget_usd.total` |
 | 7. Final evaluation | code ready | not run |
 
@@ -214,6 +214,34 @@ Tests: `.venv/bin/python -m pytest -q` → 72 passed, 5 skipped (live); `--live`
   scratch on the new data). Move `runs/loop_state.json` (and old `runs/h*`) aside before restarting.
 - Checks: offline tests 72 passed; live tests 5 passed (snap oracle 40/40 on the first 40 train tasks).
 
+## Probe leak closed; old run archived; budget reset (2026-11-22, user request)
+
+- **Leak:** `score_train` and the feedback reported each task's distance to the true edit location.
+  h003/h004 ran $0 probe harnesses at known points and trilaterated every train answer exactly
+  (`dev/true_locations_train.json`). Now probes report only task, kind, action, hit, miss reason,
+  cost, time and tokens (`evaluate.PROBE_FIELDS`, eval_version 2); feedback score.json files and
+  summaries are sanitized (`feedback.meta_score` / `meta_summary`, feedback_version 3: no
+  distance, no `point_roots_at_t` raw root ids); TASK.md version 4 says so. Hit/miss itself still
+  carries a little location information (within R or not); accepted.
+- **Archived** to `archive/old_tasks/` (gitignored; README there): harnesses h000-h004, their runs,
+  meta sessions, probes, feedback, loop state, report, service logs, and `ledger.jsonl` (~$109).
+  Services restarted (fresh proxy totals). `harnesses/` and the ledger start empty.
+- **Budget:** `budget_usd.total` $500 with $0 spent.
+- Checks: offline tests 72 passed.
+
+## Live monitor dashboard (2026-11-22, user request)
+
+- https://claude.ai/artifact/2PNoxacWfZBZwXqNLsGyEu (private): score by round (val/test/train, kept vs
+  rejected), hit rate per kind, rounds table, and every task's result with a FlyWire Neuroglancer link
+  (segments at the task's time, true location green, the harness's points red).
+- `outer/dashboard_export.py` writes `runs/dashboard/{tasks,results,rounds,manifest}.json` from tasks/,
+  runs/loop_state.json and runs/<harness>/<split>/*/score.json + decision.json (never truth/). For that,
+  score.json now carries `true_location_nm_xyz` (score_version 4, written by outer/score.py); feedback
+  and score_train pass only whitelisted fields, so the meta-agent never sees it (tested).
+- Refresh: a session cron job (every 10 min, this Claude session only, expires after 7 days) runs the
+  export and uploads only changed files; `runs/dashboard/synced.json` records what was uploaded.
+- The dashboard holds raw root ids and true locations: share it only with people who may see them.
+
 ## Files added beyond PLAN.md Section 9 (for the user to confirm)
 
 `PROGRESS.md`; `__init__.py` files; `outer/config.py` (config loading, CSV hash check, token secret);
@@ -225,7 +253,7 @@ meta_revise.md}`; `services/tokens.py`; `services/httpserver.py`; `tasks/index.j
 `services/aliases.py`,
 `outer/prompts/proofreading_guide.md` (negatives, opaque ids, the guide);
 `build/replace_edits.py`, `data/operations_v3.csv`, `truth/negatives/synapse_cache.json`,
-`runs/build_negatives.log`, `runs/replace_edits.log` (2026-11-20).
+`runs/build_negatives.log`, `runs/replace_edits.log` (2026-11-20); `archive/` (2026-11-22); `outer/dashboard_export.py`, `runs/dashboard/` (2026-11-22).
 New config keys: `config_version`, `data.source_path`, `data.sha256_prefix`, `flywire.*`,
 explicit cache prices, `limits.parallel_tasks`, `limits.meta_wall_s`, `world.socket`,
 `world.max_cutout_voxels`, `world.max_roots_per_call`, `proxy.socket`, `proxy.upstream`,

@@ -115,7 +115,7 @@ def test_kind_score_weighs_each_kind_the_same():
     always_none = [_s("merge", False), _s("split", False)] + [_s("no_merge", True)] * 4 + [_s("no_split", True)] * 4
     assert S.kind_score(always_none) == pytest.approx(0.5)
     s = S.summarize(always_none)
-    assert s["score"] == pytest.approx(0.5) and s["all"]["hits"] == 8 and s["score_version"] == "3"
+    assert s["score"] == pytest.approx(0.5) and s["all"]["hits"] == 8 and s["score_version"] == "4"
     # merge 1/2, no_split 1/4, other kinds absent: mean over present kinds only
     assert S.kind_score([_s("merge", True), _s("merge", False)] + [_s("no_split", True)] + [_s("no_split", False)] * 3) \
         == pytest.approx((0.5 + 0.25) / 2)

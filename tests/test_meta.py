@@ -122,7 +122,27 @@ def test_loop_records_test_every_round_but_never_uses_or_shows_it():
         text = "".join(p.read_text(errors="replace") for p in fb.rglob("*") if p.is_file())
         assert not any(t in text for t in idx["test"] + idx["val"])
         assert all("test" not in r for r in json.loads((fb / "history.json").read_text())["rounds"])
+        # no distance to the true location (trilateration) and no raw root ids reach the meta-agent
+        for f in fb.rglob("*"):
+            if f.is_file():
+                t = f.read_text(errors="replace")
+                assert "distance_nm" not in t and "point_roots_at_t" not in t, (f, t[:2000])
+        assert all(json.loads(p.read_text()).get("hit") is not None for p in fb.glob("train/*/score.json"))
+        from outer.evaluate import PROBE_FIELDS
+        assert not any("distance" in f or "root" in f for f in PROBE_FIELDS)
         assert "test" in (env.root / "runs/report.md").read_text()
+        assert "true_location_nm_xyz" not in text  # the monitor's field never reaches the meta-agent
+        # the monitor export: every evaluated task once, with its true location and the round's decision
+        from outer.dashboard_export import export
+        m = export(env.cfg)
+        res = json.loads((env.root / "runs/dashboard/results.json").read_text())
+        rounds = json.loads((env.root / "runs/dashboard/rounds.json").read_text())
+        assert m["files"]["results"]["rows"] == len(res)
+        assert len([r for r in res if r["harness"] == "h000"]) == sum(len(idx[k]) for k in ("train", "val", "test"))
+        assert len([r for r in res if r["harness"] == "h001"]) == len(idx["val"])  # copied in above
+        assert all(r["x_nm"] is not None and r["kind"] for r in res)
+        assert rounds[0]["harness"] == "h000" and rounds[0]["kept"] == "kept"
+        assert any(r["harness"] == "h001" and r["kept"] == "evaluating" for r in rounds)  # runs/h001 exists, not recorded
     finally:
         close_env(env, servers)
 

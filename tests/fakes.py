@@ -198,7 +198,8 @@ def fake_negatives(truths: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any
         out[tid.replace("t_fake", "t_fneg")] = {
             "negative_version": "2", "negative_id": f"{kind}_{i:04d}", "kind": kind, "operation_type": "none",
             "t_utc": tr["t_post_utc"], "segmentation_source": tr["segmentation_source"],
-            "segments": list(tr["post_edit_roots"]), "eligible": True, "problems": []}
+            "segments": list(tr["post_edit_roots"]), "eligible": True, "problems": [],
+            "neurons": [{"root_at_check": r, "position_nm_xyz": tr["edit_center_nm_xyz"]} for r in tr["post_edit_roots"]]}
     return out
 
 
